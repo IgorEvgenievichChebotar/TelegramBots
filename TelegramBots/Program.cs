@@ -2,14 +2,16 @@
 
 public static class Program
 {
-    private static void Main(string[] args)
+    private static async Task Main(string[] args)
     {
-        var ChatGPTBot = Task.Factory.StartNew(() => ChatGptTelegramBot.Program.Run(Array.Empty<string>()),
-            TaskCreationOptions.LongRunning);
+        var chatGptBot = new ChatGptTelegramBot.Program();
+        var photosBot = new PhotosTelegramBot.Program();
 
-        var PhotosBot = Task.Factory.StartNew(() => PhotosTelegramBot.Program.Run(Array.Empty<string>()),
-            TaskCreationOptions.LongRunning);
+        var options = TaskCreationOptions.LongRunning;
 
-        Task.WaitAll(ChatGPTBot, PhotosBot);
+        await Task.WhenAll(
+            Task.Factory.StartNew(() => chatGptBot.Run(Array.Empty<string>()), options),
+            Task.Factory.StartNew(() => photosBot.Run(Array.Empty<string>()), options)
+        );
     }
 }

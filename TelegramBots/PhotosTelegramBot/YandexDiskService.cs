@@ -29,12 +29,15 @@ public interface IYandexDiskService
 
 public class YandexDiskService : IYandexDiskService
 {
-    private readonly List<Image> Images = new();
-    private readonly Dictionary<long, Dictionary<string, byte[]>> LikesCache = new();
-    private readonly HttpClient _httpClient = new();
+    private readonly List<Image> Images;
+    private readonly Dictionary<long, Dictionary<string, byte[]>> LikesCache;
+    private readonly HttpClient _httpClient;
 
     public YandexDiskService()
     {
+        Images = new List<Image>();
+        LikesCache = new Dictionary<long, Dictionary<string, byte[]>>();
+        _httpClient = new HttpClient();
         _httpClient.DefaultRequestHeaders.Add(
             "Authorization",
             $"OAuth {Secrets.OAuthYandexDisk}"
@@ -81,7 +84,7 @@ public class YandexDiskService : IYandexDiskService
 
     public async Task<Dictionary<string, byte[]>> LoadLikesAsync(long chatId)
     {
-        var urlFolderOnDisk = Secrets.LikedImagesByChatIdUrl(chatId, limit: 10);
+        var urlFolderOnDisk = Urls.GetLikedImagesByChatId(chatId, limit: 10);
         var response = await _httpClient.GetAsync(urlFolderOnDisk);
         if (response.StatusCode == HttpStatusCode.NotFound) // папки нет
         {
@@ -112,8 +115,8 @@ public class YandexDiskService : IYandexDiskService
 
     public async Task<string> GetPublicFolderUrlByChatIdAsync(long chatId)
     {
-        var createFolderUrl = Secrets.FolderByChatIdUrl(chatId);
-        var publishFolderUrl = Secrets.PublishFolderUrl(chatId);
+        var createFolderUrl = Urls.GetFolderByChatId(chatId);
+        var publishFolderUrl = Urls.PublishFolder(chatId);
 
         string publicUrl;
         var folderResponse = await _httpClient.GetAsync(createFolderUrl);
@@ -146,9 +149,9 @@ public class YandexDiskService : IYandexDiskService
 
     public async Task AddToLikes(long chatId, Image img)
     {
-        var urlCopyImageToFolderOnDisk = Secrets.CopyImageToFolderUrl(
+        var urlCopyImageToFolderOnDisk = Urls.CopyImageToFolder(
             chatId: chatId,
-            currentPath: "disk:/" + Secrets.TargetFolder + "/",
+            currentPath: "disk:/" + Urls.TargetFolder + "/",
             imgName: img.Name);
 
         var task = _httpClient.PostAsync(urlCopyImageToFolderOnDisk, null);
@@ -164,7 +167,7 @@ public class YandexDiskService : IYandexDiskService
 
     public void DeleteImage(string imgName)
     {
-        var url = Secrets.DeleteImageUrl(imgName);
+        var url = Urls.DeleteImage(imgName);
         _httpClient.DeleteAsync(url);
         var image = Images.Find(i => i.Name == imgName);
         Images.Remove(image!);
@@ -172,7 +175,7 @@ public class YandexDiskService : IYandexDiskService
 
     public void DeleteAllImagesFromCache()
     {
-        Images.RemoveAll(i => i.ParentFolder!.Name != Secrets.TargetFolder);
+        Images.RemoveAll(i => i.ParentFolder!.Name != Urls.TargetFolder);
         Console.WriteLine("удалены все фотки, текущее кол-во: " + Images.Count);
     }
 
@@ -224,7 +227,7 @@ public class YandexDiskService : IYandexDiskService
     public Image GetRandomImage()
     {
         var img = Images
-            .Where(i => Secrets.TargetFolder == i.ParentFolder!.Name)
+            .Where(i => Urls.TargetFolder == i.ParentFolder!.Name)
             .OrderBy(_ => Guid.NewGuid())
             .First();
         return img;
@@ -241,13 +244,13 @@ public class YandexDiskService : IYandexDiskService
     public Image? FindImageByName(string imgName)
     {
         return Images
-            .Where(i => Secrets.TargetFolder == i.ParentFolder!.Name)
+            .Where(i => Urls.TargetFolder == i.ParentFolder!.Name)
             .FirstOrDefault(i => i.Name.ToLower().Contains(imgName.ToLower()));
     }
 
     public async Task<List<Folder>> GetFoldersAsync()
     {
-        var url = Secrets.FoldersUrl();
+        var url = Urls.GetFolders();
         var response = await _httpClient.GetAsync(url);
         var jsonString = await response.Content.ReadAsStringAsync();
         var folders = DeserializeFoldersFromJsonString(jsonString);
@@ -265,10 +268,10 @@ public class YandexDiskService : IYandexDiskService
 
     public async Task LoadImagesAsync()
     {
-        if (Images.Any(i => Secrets.TargetFolder == i.ParentFolder!.Name))
+        if (Images.Any(i => Urls.TargetFolder == i.ParentFolder!.Name))
         {
             Console.WriteLine(
-                $"{DateTime.Now} | Фотки в папке {Secrets.TargetFolder} уже есть; " +
+                $"{DateTime.Now} | Фотки в папке {Urls.TargetFolder} уже есть; " +
                 $"Всего: {Images.Count}");
             return;
         }
@@ -278,25 +281,25 @@ public class YandexDiskService : IYandexDiskService
 
         async Task LoadCacheImages()
         {
-            var response = await _httpClient.GetAsync(Secrets.ImagesUrl(limit: Secrets.CacheCount));
+            var response = await _httpClient.GetAsync(Urls.GetImages(limit: Urls.CacheCount));
             var cacheCount = await LoadAndAddImages(response);
             Console.WriteLine(
-                $"{DateTime.Now} | {cacheCount} фоток кэша загружено из папки {Secrets.TargetFolder}. " +
+                $"{DateTime.Now} | {cacheCount} фоток кэша загружено из папки {Urls.TargetFolder}. " +
                 $"Всего: {Images.Count}");
         }
 
         async Task LoadRemainingImages()
         {
-            var total = await await Secrets.FolderUrl(Secrets.TargetFolder)
+            var total = await await Urls.GetTargetFolder()
                 .GetJsonAsync<JObject>()
                 .ContinueWith(async t => (int)(await t)["_embedded"]["total"]);
 
             var tasks = new List<Task<HttpResponseMessage>>();
 
-            for (var offset = Secrets.CacheCount; offset < total; offset += Secrets.CacheCount)
+            for (var offset = Urls.CacheCount; offset < total; offset += Urls.CacheCount)
             {
-                tasks.Add(_httpClient.GetAsync(Secrets.ImagesUrl(
-                    limit: Secrets.CacheCount,
+                tasks.Add(_httpClient.GetAsync(Urls.GetImages(
+                    limit: Urls.CacheCount,
                     offset: offset)));
             }
 
@@ -307,7 +310,7 @@ public class YandexDiskService : IYandexDiskService
             );
             Console.WriteLine(
                 $"{DateTime.Now} | {Images.Count - before} оставшихся фоток загружено " +
-                $"из папки {Secrets.TargetFolder} за {timer.ElapsedMilliseconds}мс. " +
+                $"из папки {Urls.TargetFolder} за {timer.ElapsedMilliseconds}мс. " +
                 $"Всего: {Images.Count}");
         }
 
@@ -329,7 +332,7 @@ public class YandexDiskService : IYandexDiskService
     {
         var img = FindImageByName(name);
         if (img == null) return;
-        var url = Secrets.OpenInBrowserUrl + img.Name;
+        var url = Urls.OpenInBrowserUrl + img.Name;
         Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
     }
 

@@ -1,99 +1,141 @@
 ﻿using System.Data.SQLite;
-using OpenAI.GPT3.ObjectModels;
 using OpenAI.GPT3.ObjectModels.RequestModels;
 
 namespace TelegramBots.ChatGptTelegramBot;
 
 public interface IMessagesRepo
 {
-    Task<List<ChatMessage>> GetHistory(long chatId);
-    Task Save(ChatMessage message, long chatId);
-    Task<ChatMessage> RemoveLast(long chatId);
-    Task RemoveAll(long chatId);
+    Task<List<ChatMessage>> GetQuestionsAsync(long chatId);
+    Task SaveAsync(string msgText, long msgId, long chatId, string role = "user");
+    Task RemoveAllAsync(long chatId);
+    Task UpdateAsync(long msgId, string editedQuestion);
+    Task RemoveAllAfterAsync(long msgId);
+    Task<IList<ChatMessage>> GetQuestionsBeforeInclusiveAsync(long chatId, long msgId);
 }
 
 public class MessagesRepo : IMessagesRepo
 {
-    private static readonly SQLiteConnection _connection = new("Data Source=messages;Version=3;");
+    private readonly string connectionString;
 
-    public MessagesRepo()
+    public MessagesRepo(string connectionString)
     {
-        var sqLiteCommand = _connection.CreateCommand();
-        sqLiteCommand.CommandText = @"create table if not exists messages
+        this.connectionString = connectionString;
+        using var connection = new SQLiteConnection(connectionString);
+        connection.Open();
+
+        using var sqlCommand = connection.CreateCommand();
+        sqlCommand.CommandText = @"create table if not exists messages
         (
-            id     integer primary key autoincrement,
-            chatId integer,
-            text   text
+            msgId  integer not null ,
+            chatId integer not null,
+            text   text,
+            time   datetime DEFAULT current_timestamp,
+            role   text default 'user'
         );";
-        _connection.Open();
-        sqLiteCommand.ExecuteNonQuery();
-        _connection.Close();
+        sqlCommand.ExecuteNonQuery();
     }
 
-    public async Task<List<ChatMessage>> GetHistory(long chatId)
+    public async Task<List<ChatMessage>> GetQuestionsAsync(long chatId)
     {
+        await using var connection = new SQLiteConnection(connectionString);
+        await connection.OpenAsync();
+
+        await using var sqlCommand = connection.CreateCommand();
+        sqlCommand.CommandText = "select * from messages where chatId = @chatId";
+        sqlCommand.Parameters.AddWithValue("@chatId", chatId);
+
+        await using var reader = await sqlCommand.ExecuteReaderAsync();
+
         var messages = new List<ChatMessage>();
-        var sqLiteCommand = _connection.CreateCommand();
-        sqLiteCommand.CommandText = "select * from messages where chatId = @chatId";
-        sqLiteCommand.Parameters.AddWithValue("@chatId", chatId);
-        await _connection.OpenAsync();
-        var reader = await sqLiteCommand.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
-            var id = reader.GetInt32(0);
             var text = reader.GetString(2);
-            messages.Add(new ChatMessage(StaticValues.ChatMessageRoles.User, text));
+            var role = reader.GetString(4);
+            messages.Add(new ChatMessage(role, text));
         }
-
-        await _connection.CloseAsync();
 
         return messages;
     }
 
 
-    public async Task Save(ChatMessage message, long chatId)
+    public async Task SaveAsync(string msgText, long msgId, long chatId, string role = "user")
     {
-        await using var connection = new SQLiteConnection("Data Source=messages;Version=3;");
+        await using var connection = new SQLiteConnection(connectionString);
         await connection.OpenAsync();
 
-        await using (var command = connection.CreateCommand())
-        {
-            command.CommandText = "insert into messages (chatId, text) values (@chatId, @text)";
-            command.Parameters.AddWithValue("@chatId", chatId);
-            command.Parameters.AddWithValue("@text", message.Content);
+        await using var sqlCommand = connection.CreateCommand();
+        sqlCommand.CommandText =
+            "insert into messages (msgId, chatId, text, role) values (@msgId, @chatId, @text, @role)";
+        sqlCommand.Parameters.AddWithValue("@chatId", chatId);
+        sqlCommand.Parameters.AddWithValue("@msgId", msgId);
+        sqlCommand.Parameters.AddWithValue("@text", msgText);
+        sqlCommand.Parameters.AddWithValue("@role", role);
 
-            await command.ExecuteNonQueryAsync();
+        await sqlCommand.ExecuteNonQueryAsync();
+    }
+
+    public async Task RemoveAllAsync(long chatId)
+    {
+        await using var connection = new SQLiteConnection(connectionString);
+        await connection.OpenAsync();
+
+        await using var sqlCommand = connection.CreateCommand();
+        sqlCommand.CommandText = "delete from messages where chatId = @chatId";
+        sqlCommand.Parameters.AddWithValue("@chatId", chatId);
+
+        await sqlCommand.ExecuteNonQueryAsync();
+    }
+
+    public async Task UpdateAsync(long msgId, string editedQuestion)
+    {
+        await using var connection = new SQLiteConnection(connectionString);
+        await connection.OpenAsync();
+
+        await using var sqlCommand = connection.CreateCommand();
+        sqlCommand.CommandText = "UPDATE messages SET text = @text WHERE msgId = @msgId;";
+        sqlCommand.Parameters.AddWithValue("@text", editedQuestion);
+        sqlCommand.Parameters.AddWithValue("@msgId", msgId);
+
+        await sqlCommand.ExecuteNonQueryAsync();
+    }
+    
+    public async Task RemoveAllAfterAsync(long msgId)
+    {
+        await using var connection = new SQLiteConnection(connectionString);
+        await connection.OpenAsync();
+
+        await using var sqlCommand = connection.CreateCommand();
+        sqlCommand.CommandText = "DELETE FROM messages " +
+                                 "WHERE chatId = 34043403 " +
+                                 "AND time > (SELECT time FROM messages WHERE msgId = 867);";
+        sqlCommand.Parameters.AddWithValue("@msgId", msgId);
+
+        await sqlCommand.ExecuteNonQueryAsync();
+    }
+
+    public async Task<IList<ChatMessage>> GetQuestionsBeforeInclusiveAsync(long chatId, long msgId)
+    {
+        await using var connection = new SQLiteConnection(connectionString);
+        await connection.OpenAsync();
+
+        await using var sqlCommand = connection.CreateCommand();
+        sqlCommand.CommandText = "select * " +
+                                 "from messages " +
+                                 "where chatId = @chatId " +
+                                 "and (select time from messages where msgId = @msgId and chatId = @chatId) >= time;";
+        sqlCommand.Parameters.AddWithValue("@chatId", chatId);
+        sqlCommand.Parameters.AddWithValue("@msgId", msgId);
+
+        await using var reader = await sqlCommand.ExecuteReaderAsync();
+
+        var messages = new List<ChatMessage>();
+        while (await reader.ReadAsync())
+        {
+            var text = reader.GetString(2);
+            var role = reader.GetString(4);
+            messages.Add(new ChatMessage(role, text));
         }
 
-        await connection.CloseAsync();
-    }
-
-    public async Task<ChatMessage> RemoveLast(long chatId)
-    {
-        var sqLiteCommand = _connection.CreateCommand();
-        sqLiteCommand.CommandText = "select * from messages where chatId = @chatId order by id desc limit 1";
-        sqLiteCommand.Parameters.AddWithValue("@chatId", chatId);
-        await _connection.OpenAsync();
-        var reader = await sqLiteCommand.ExecuteReaderAsync();
-        if (!await reader.ReadAsync()) return null;
-        var id = reader.GetInt32(0);
-        var text = reader.GetString(2);
-        var message = new ChatMessage(StaticValues.ChatMessageRoles.User, text);
-        var sqLiteCommandDelete = _connection.CreateCommand();
-        sqLiteCommandDelete.CommandText = "delete from messages where id = @id";
-        sqLiteCommandDelete.Parameters.AddWithValue("@id", id);
-        await sqLiteCommandDelete.ExecuteNonQueryAsync();
-        await _connection.CloseAsync();
-        return message;
-    }
-
-    public async Task RemoveAll(long chatId)
-    {
-        var sqLiteCommand = _connection.CreateCommand();
-        sqLiteCommand.CommandText = "delete from messages where chatId = @chatId";
-        sqLiteCommand.Parameters.AddWithValue("@chatId", chatId);
-        await _connection.OpenAsync();
-        await sqLiteCommand.ExecuteNonQueryAsync();
-        await _connection.CloseAsync();
+        return messages;
     }
 }

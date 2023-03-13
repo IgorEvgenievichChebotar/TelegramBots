@@ -1,7 +1,6 @@
 ﻿using System.Globalization;
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
-using Telegram.Bot.Polling;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
@@ -10,35 +9,39 @@ namespace TelegramBots.PhotosTelegramBot;
 
 public class Program
 {
-    private static readonly IYandexDiskService _service = new YandexDiskService();
+    private readonly TelegramBotClient _bot;
+    private readonly IYandexDiskService _diskService;
+    private readonly ReplyKeyboardMarkup defaultReplyKeyboardMarkup;
+    private readonly CancellationTokenSource _cts;
 
-    private static readonly ReplyKeyboardMarkup defaultReplyKeyboardMarkup = new(new[]
+    public Program()
     {
-        new KeyboardButton("Ещё"),
-        new KeyboardButton("Сменить папку"),
-        new KeyboardButton("Избранные")
-    }) { ResizeKeyboard = true };
+        _cts = new CancellationTokenSource();
+        _bot = new TelegramBotClient($"{Secrets.TelegramBotToken}");
+        _diskService = new YandexDiskService();
+        defaultReplyKeyboardMarkup = new ReplyKeyboardMarkup(new[]
+        {
+            new KeyboardButton("Ещё"),
+            new KeyboardButton("Сменить папку"),
+            new KeyboardButton("Избранные")
+        }) { ResizeKeyboard = true };
+    }
 
-    public static void Run(string[] args)
+    public void Run(string[] args)
     {
-        var bot = new TelegramBotClient($"{Secrets.TelegramBotToken}");
+        _diskService.LoadImagesAsync().Wait(_cts.Token);
 
-        using CancellationTokenSource cts = new();
-
-        _service.LoadImagesAsync().Wait(cts.Token);
-
-        bot.StartReceiving(
+        _bot.StartReceiving(
             updateHandler: UpdateHandler(),
             pollingErrorHandler: PollingErrorHandler(),
-            receiverOptions: new ReceiverOptions { AllowedUpdates = Array.Empty<UpdateType>() },
-            cancellationToken: cts.Token
+            cancellationToken: _cts.Token
         );
 
         Console.ReadLine();
-        cts.Cancel();
+        _cts.Cancel();
     }
 
-    private static async Task HandleUpdateAsync(ITelegramBotClient bot, Update update,
+    private async Task HandleUpdateAsync(ITelegramBotClient bot, Update update,
         CancellationToken token)
     {
         var settings = new Settings
@@ -51,13 +54,14 @@ public class Program
         switch (update.Type)
         {
             case UpdateType.Message:
+
                 if (update.Message is not { Text: { } } msg) return;
 
                 if (msg.Chat.Username != $"{Secrets.MyUsername}")
                 {
-                    Secrets.TargetFolder = "PublicPhotos";
-                    _service.DeleteAllImagesFromCache();
-                    await _service.LoadImagesAsync();
+                    Urls.TargetFolder = "PublicPhotos";
+                    _diskService.DeleteAllImagesFromCache();
+                    await _diskService.LoadImagesAsync();
                 }
 
                 var msgText = msg.Text;
@@ -76,7 +80,7 @@ public class Program
                     case "/start":
                         await StartAsync(settings);
                         await HelpAsync(settings);
-                        var task = _service.GetLikesAsync(settings.ChatId);
+                        var task = _diskService.GetLikesAsync(settings.ChatId);
                         return;
                     case "/help":
                         await HelpAsync(settings);
@@ -107,9 +111,9 @@ public class Program
             case UpdateType.CallbackQuery:
                 if (update.CallbackQuery!.From.Username != $"{Secrets.MyUsername}")
                 {
-                    Secrets.TargetFolder = "PublicPhotos";
-                    _service.DeleteAllImagesFromCache();
-                    await _service.LoadImagesAsync();
+                    Urls.TargetFolder = "PublicPhotos";
+                    _diskService.DeleteAllImagesFromCache();
+                    await _diskService.LoadImagesAsync();
                 }
 
                 var data = update.CallbackQuery!.Data;
@@ -173,9 +177,9 @@ public class Program
         }
     }
 
-    private static async Task ChangeFolderAsync(Settings settings)
+    private async Task ChangeFolderAsync(Settings settings)
     {
-        var folders = await _service.GetFoldersAsync();
+        var folders = await _diskService.GetFoldersAsync();
         await settings.Bot.SendTextMessageAsync(
             chatId: settings.ChatId,
             text: "Выбери из списка",
@@ -188,10 +192,10 @@ public class Program
             cancellationToken: settings.CancellationToken);
     }
 
-    private static async Task ConfirmDeleteAsync(Settings settings)
+    private async Task ConfirmDeleteAsync(Settings settings)
     {
         var imgName = settings.Query!;
-        _service.DeleteImage(imgName);
+        _diskService.DeleteImage(imgName);
         await settings.Bot.SendTextMessageAsync(
             chatId: settings.ChatId,
             text: $"{imgName} удалено.",
@@ -202,10 +206,10 @@ public class Program
             cancellationToken: settings.CancellationToken);
     }
 
-    private static async Task DownloadImageAsync(Settings settings)
+    private async Task DownloadImageAsync(Settings settings)
     {
         var imgName = settings.Query!;
-        settings.Image = _service.FindImageByName(imgName);
+        settings.Image = _diskService.FindImageByName(imgName);
         await settings.Bot.SendTextMessageAsync(
             chatId: settings.ChatId,
             text: "Фото скоро будет доступно в чате, можешь продолжать использовать бота.",
@@ -219,7 +223,7 @@ public class Program
             return;
         }
 
-        var imgBytes = await _service.LoadOriginalImageAsync(img);
+        var imgBytes = await _diskService.LoadOriginalImageAsync(img);
 
         await settings.Bot.SendDocumentAsync(
             chatId: settings.ChatId,
@@ -227,10 +231,10 @@ public class Program
             cancellationToken: settings.CancellationToken);
     }
 
-    private static async Task DeleteAsync(Settings settings)
+    private async Task DeleteAsync(Settings settings)
     {
         var imgName = settings.Query!;
-        settings.Image = _service.FindImageByName(imgName);
+        settings.Image = _diskService.FindImageByName(imgName);
         var img = settings.Image;
         if (img is null)
         {
@@ -240,7 +244,7 @@ public class Program
 
         await settings.Bot.SendPhotoAsync(
             chatId: settings.ChatId,
-            photo: new MemoryStream(await _service.LoadThumbnailImageAsync(img))!,
+            photo: new MemoryStream(await _diskService.LoadThumbnailImageAsync(img))!,
             caption: $"Точно удалить {img.Name}?",
             parseMode: ParseMode.Html,
             replyMarkup: new InlineKeyboardMarkup(
@@ -249,7 +253,7 @@ public class Program
         );
     }
 
-    private static async Task ImgNotFoundAsync(Settings settings, string imgName)
+    private async Task ImgNotFoundAsync(Settings settings, string imgName)
     {
         await settings.Bot.SendTextMessageAsync(
             chatId: settings.ChatId,
@@ -258,9 +262,9 @@ public class Program
         return;
     }
 
-    private static async Task GetLikesAsync(Settings settings)
+    private async Task GetLikesAsync(Settings settings)
     {
-        var likes = await _service.GetLikesAsync(settings.ChatId);
+        var likes = await _diskService.GetLikesAsync(settings.ChatId);
 
         if (!likes.Any())
         {
@@ -281,7 +285,7 @@ public class Program
             disableNotification: true
         );
 
-        var urlToLikedImages = _service.GetPublicFolderUrlByChatIdAsync(chatId: settings.ChatId);
+        var urlToLikedImages = _diskService.GetPublicFolderUrlByChatIdAsync(chatId: settings.ChatId);
 
         await settings.Bot.SendTextMessageAsync(
             chatId: settings.ChatId,
@@ -291,10 +295,10 @@ public class Program
             disableNotification: true
         );
 
-        var task = _service.LoadLikesAsync(settings.ChatId);
+        var task = _diskService.LoadLikesAsync(settings.ChatId);
     }
 
-    private static async Task StartAsync(Settings settings)
+    private async Task StartAsync(Settings settings)
     {
         Console.WriteLine($"{DateTime.Now} | Бот запущен для {settings.Update.Message!.Chat.Username}");
         await settings.Bot.SendTextMessageAsync(
@@ -308,10 +312,10 @@ public class Program
             disableNotification: true);
     }
 
-    private static async Task LikeAsync(Settings settings)
+    private async Task LikeAsync(Settings settings)
     {
         var imgName = settings.Query!;
-        settings.Image = _service.FindImageByName(imgName);
+        settings.Image = _diskService.FindImageByName(imgName);
 
         if (settings.Image is null)
         {
@@ -319,9 +323,9 @@ public class Program
             return;
         }
 
-        var url = await _service.GetPublicFolderUrlByChatIdAsync(settings.ChatId);
+        var url = await _diskService.GetPublicFolderUrlByChatIdAsync(settings.ChatId);
 
-        var task = _service.AddToLikes(settings.ChatId, settings.Image);
+        var task = _diskService.AddToLikes(settings.ChatId, settings.Image);
 
         await settings.Bot.SendTextMessageAsync(
             chatId: settings.ChatId,
@@ -332,24 +336,24 @@ public class Program
             disableNotification: true);
     }
 
-    private static async Task ConfirmChangeFolderAsync(Settings settings)
+    private async Task ConfirmChangeFolderAsync(Settings settings)
     {
         var parentFolder = settings.Query!;
-        if (Secrets.TargetFolder != parentFolder)
+        if (Urls.TargetFolder != parentFolder)
         {
-            Secrets.TargetFolder = parentFolder;
-            await _service.LoadImagesAsync();
+            Urls.TargetFolder = parentFolder;
+            await _diskService.LoadImagesAsync();
         }
 
         await settings.Bot.SendTextMessageAsync(
             chatId: settings.ChatId,
-            text: $"Папка изменена на {Secrets.TargetFolder}",
+            text: $"Папка изменена на {Urls.TargetFolder}",
             replyMarkup: defaultReplyKeyboardMarkup,
             cancellationToken: settings.CancellationToken,
             disableNotification: true);
     }
 
-    private static async Task NoAccessAsync(Settings settings)
+    private async Task NoAccessAsync(Settings settings)
     {
         await settings.Bot.SendTextMessageAsync(
             chatId: settings.ChatId,
@@ -358,7 +362,7 @@ public class Program
             disableNotification: true);
     }
 
-    private static async Task HelpAsync(Settings settings)
+    private async Task HelpAsync(Settings settings)
     {
         Console.WriteLine($"{DateTime.Now} | Отправлен список помощи");
         await settings.Bot.SendTextMessageAsync(
@@ -377,11 +381,11 @@ public class Program
         );
     }
 
-    private static async Task FindAsync(Settings settings)
+    private async Task FindAsync(Settings settings)
     {
         CultureInfo.DefaultThreadCurrentCulture = CultureInfo.GetCultureInfo("de-DE");
 
-        settings.Image = _service.GetRandomImage();
+        settings.Image = _diskService.GetRandomImage();
 
         if (settings.Query == null)
         {
@@ -397,11 +401,11 @@ public class Program
                 DateTimeStyles.None,
                 out var date))
         {
-            var img = _service.GetRandomImage(date);
+            var img = _diskService.GetRandomImage(date);
             if (img is null)
             {
-                var dateBefore = _service.FindClosestDateBefore(date);
-                var dateAfter = _service.FindClosestDateAfter(date);
+                var dateBefore = _diskService.FindClosestDateBefore(date);
+                var dateAfter = _diskService.FindClosestDateAfter(date);
 
                 await settings.Bot.SendTextMessageAsync(
                     chatId: settings.ChatId,
@@ -425,7 +429,7 @@ public class Program
             return;
         }
 
-        settings.Image = _service.FindImageByName(settings.Query);
+        settings.Image = _diskService.FindImageByName(settings.Query);
         if (settings.Image is null)
         {
             await ImgNotFoundAsync(settings, settings.Query);
@@ -435,14 +439,14 @@ public class Program
         await SendImageAsync(settings);
     }
 
-    static async Task SendImageAsync(Settings settings)
+    async Task SendImageAsync(Settings settings)
     {
         var img = settings.Image!;
         await settings.Bot.SendPhotoAsync(
             chatId: settings.ChatId,
-            caption: $"<a href=\"{Secrets.OpenInBrowserUrl + img.Name}\">{img.Name}</a><b> {img.DateTime}</b>",
+            caption: $"<a href=\"{Urls.OpenInBrowserUrl + img.Name}\">{img.Name}</a><b> {img.DateTime}</b>",
             parseMode: ParseMode.Html,
-            photo: new MemoryStream(await _service.LoadThumbnailImageAsync(img))!,
+            photo: new MemoryStream(await _diskService.LoadThumbnailImageAsync(img))!,
             replyMarkup: new InlineKeyboardMarkup(new[]
             {
                 new[]
@@ -473,7 +477,7 @@ public class Program
             $"{DateTime.Now} | Отправлено фото {img} пользователю {username}");
     }
 
-    private static Task HandlePollingErrorAsync(Exception exception)
+    private Task HandlePollingErrorAsync(Exception exception)
     {
         var ErrorMessage = exception switch
         {
@@ -487,7 +491,7 @@ public class Program
         return Task.CompletedTask;
     }
 
-    private static Func<ITelegramBotClient, Exception, CancellationToken, Task> PollingErrorHandler()
+    private Func<ITelegramBotClient, Exception, CancellationToken, Task> PollingErrorHandler()
     {
         return async (_, exception, _) =>
         {
@@ -502,7 +506,7 @@ public class Program
         };
     }
 
-    private static Func<ITelegramBotClient, Update, CancellationToken, Task> UpdateHandler()
+    private Func<ITelegramBotClient, Update, CancellationToken, Task> UpdateHandler()
     {
         return async (botClient, update, cancellationToken) =>
         {
